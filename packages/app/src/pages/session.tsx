@@ -25,13 +25,20 @@ import { createStore } from "solid-js/store"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { Select } from "@opencode-ai/ui/select"
 import { Tabs } from "@opencode-ai/ui/tabs"
-import { createAutoScroll } from "@opencode-ai/ui/hooks"
+import { useFileComponent } from "@opencode-ai/ui/context/file"
+import { Dynamic } from "solid-js/web"
+import { ScrollView } from "@opencode-ai/ui/scroll-view"
+import {
+  createAutoScroll,
+} from "@opencode-ai/ui/hooks"
 import { previewSelectedLines } from "@opencode-ai/ui/pierre/selection-bridge"
 import { Button } from "@opencode-ai/ui/button"
+import { IconButton } from "@opencode-ai/ui/icon-button"
 import { showToast } from "@opencode-ai/ui/toast"
-import { checksum } from "@opencode-ai/core/util/encode"
+import { checksum, sampledChecksum } from "@opencode-ai/core/util/encode"
 import { useLocation, useSearchParams } from "@solidjs/router"
 import { NewSessionDesignView, NewSessionView, SessionHeader } from "@/components/session"
+import FileTree from "@/components/file-tree"
 import { useComments } from "@/context/comments"
 import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/session-prefetch"
 import { useServerSync } from "@/context/server-sync"
@@ -181,11 +188,13 @@ function createSessionHistoryLoader(input: SessionHistoryWindowInput) {
   }
 }
 
+
 export default function Page() {
   const serverSync = useServerSync()
   const layout = useLayout()
   const local = useLocal()
   const file = useFile()
+  const fileComponent = useFileComponent()
   const sync = useSync()
   const queryClient = useQueryClient()
   const dialog = useDialog()
@@ -379,10 +388,12 @@ export default function Page() {
 
   const [store, setStore] = createStore({
     messageId: undefined as string | undefined,
-    mobileTab: "session" as "session" | "changes",
+    mobileTab: "session" as "session" | "changes" | "files",
     changes: "git" as ChangeMode,
     newSessionWorktree: "main",
     deferRender: false,
+    mobileFilePath: undefined as string | undefined,
+
   })
 
   const [followup, setFollowup] = persisted(
@@ -449,6 +460,7 @@ export default function Page() {
     return list
   })
   const mobileChanges = createMemo(() => !isDesktop() && store.mobileTab === "changes")
+  const mobileFiles = createMemo(() => !isDesktop() && store.mobileTab === "files")
   const wantsReview = createMemo(() =>
     isDesktop()
       ? desktopFileTreeOpen() || (desktopReviewOpen() && activeTab() === "review")
@@ -490,6 +502,34 @@ export default function Page() {
   }
   const reviewCount = () => reviewDiffs().length
   const hasReview = () => reviewCount() > 0
+  const mobileDiffFiles = createMemo(() => reviewDiffs().map((d) => d.file).filter((f): f is string => typeof f === "string"))
+  const mobileDiffKinds = createMemo(() => {
+    const merge = (a: "add" | "del" | "mix" | undefined, b: "add" | "del" | "mix") => {
+      if (!a) return b
+      if (a === b) return a
+      return "mix" as const
+    }
+    const normalize = (p: string) => p.replaceAll("\\\\", "/").replace(/\/+$/, "")
+    const out = new Map<string, "add" | "del" | "mix">()
+    for (const diff of reviewDiffs()) {
+      if (!diff.file) continue
+      const file = normalize(diff.file)
+      const kind = diff.status === "added" ? "add" : diff.status === "deleted" ? "del" : "mix"
+      out.set(file, kind)
+      const parts = file.split("/")
+      for (const [idx] of parts.slice(0, -1).entries()) {
+        const dir = parts.slice(0, idx + 1).join("/")
+        if (!dir) continue
+        out.set(dir, merge(out.get(dir), kind))
+      }
+    }
+    return out
+  })
+  const mobileNofiles = createMemo(() => {
+    const state = file.tree.state("")
+    if (!state?.loaded) return false
+    return file.tree.children("").length === 0
+  })
   const reviewReady = () => {
     if (store.changes === "git" || store.changes === "branch") return !vcsQuery.isPending
     return true
@@ -599,6 +639,7 @@ export default function Page() {
   }
 
   let inputRef!: HTMLDivElement
+
   let promptDock: HTMLDivElement | undefined
   let dockHeight = 0
   let scroller: HTMLDivElement | undefined
@@ -1667,6 +1708,7 @@ export default function Page() {
       onSubmit={() => {
         comments.clear()
         resumeScroll()
+        if (!isDesktop()) setStore("mobileTab", "session")
       }}
       onResponseSubmit={resumeScroll}
       followup={
@@ -1716,7 +1758,7 @@ export default function Page() {
             <Tabs.List>
               <Tabs.Trigger
                 value="session"
-                class="!w-1/2 !max-w-none"
+                class="!w-1/3 !max-w-none"
                 classes={{ button: "w-full" }}
                 onClick={() => setStore("mobileTab", "session")}
               >
@@ -1724,13 +1766,19 @@ export default function Page() {
               </Tabs.Trigger>
               <Tabs.Trigger
                 value="changes"
-                class="!w-1/2 !max-w-none !border-r-0"
+                class="!w-1/3 !max-w-none"
                 classes={{ button: "w-full" }}
                 onClick={() => setStore("mobileTab", "changes")}
               >
-                {hasReview()
-                  ? language.t("session.review.filesChanged", { count: reviewCount() })
-                  : language.t("session.review.change.other")}
+                {language.t("session.review.change.other")}
+              </Tabs.Trigger>
+              <Tabs.Trigger
+                value="files"
+                class="!w-1/3 !max-w-none !border-r-0"
+                classes={{ button: "w-full" }}
+                onClick={() => setStore("mobileTab", "files")}
+              >
+                {language.t("session.tab.files")}
               </Tabs.Trigger>
             </Tabs.List>
           </Tabs>
@@ -1762,6 +1810,77 @@ export default function Page() {
                     emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
                   })}
                 </div>
+              </Match>
+              <Match when={params.id && mobileFiles()}>
+                <Switch>
+                  <Match when={store.mobileFilePath}>
+                    <div class="relative h-full overflow-hidden bg-background-stronger flex flex-col">
+                      <div class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border-base">
+                        <IconButton
+                          icon="chevron-left"
+                          variant="ghost"
+                          size="small"
+                          onClick={() => setStore("mobileFilePath", undefined)}
+                        />
+                        <span class="text-14-medium text-text-strong truncate">
+                          {store.mobileFilePath}
+                        </span>
+                      </div>
+                      <div class="flex-1 min-h-0 overflow-hidden">
+                        <Switch>
+                          <Match when={file.get(store.mobileFilePath!)?.loaded}>
+                            <ScrollView class="h-full">
+                              <div class="relative overflow-hidden pb-40">
+                                <Dynamic
+                                  component={fileComponent}
+                                  mode="text"
+                                  file={{
+                                    name: store.mobileFilePath!,
+                                    contents: file.get(store.mobileFilePath!)?.content?.content ?? "",
+                                    cacheKey: sampledChecksum(file.get(store.mobileFilePath!)?.content?.content ?? ""),
+                                  }}
+                                  class="select-text"
+                                />
+                              </div>
+                            </ScrollView>
+                          </Match>
+                          <Match when={file.get(store.mobileFilePath!)?.loading}>
+                            <div class="px-6 py-4 text-text-weak">{language.t("common.loading")}...</div>
+                          </Match>
+                          <Match when={file.get(store.mobileFilePath!)?.error}>
+                            <div class="px-6 py-4 text-text-weak">{file.get(store.mobileFilePath!)?.error}</div>
+                          </Match>
+                        </Switch>
+                      </div>
+                    </div>
+                  </Match>
+                  <Match when={true}>
+                    <div class="relative h-full overflow-hidden bg-background-stronger">
+                      <Switch>
+                        <Match when={mobileNofiles()}>
+                          <div class="h-full flex flex-col">
+                            <div class="h-6 shrink-0" aria-hidden />
+                            <div class="flex-1 pb-64 flex items-center justify-center text-center">
+                              <div class="text-12-regular text-text-weak">{language.t("session.files.empty")}</div>
+                            </div>
+                          </div>
+                        </Match>
+                        <Match when={true}>
+                          <FileTree
+                            path=""
+                            class="pt-3"
+                            modified={mobileDiffFiles()}
+                            kinds={mobileDiffKinds()}
+                            onFileClick={(node) => {
+                              setStore("mobileFilePath", node.path)
+                              void file.load(node.path)
+                            }}
+                          />
+                        </Match>
+                      </Switch>
+                    </div>
+                  </Match>
+                </Switch>
               </Match>
               <Match when={params.id}>
                 <Show when={messagesReady()}>

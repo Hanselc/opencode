@@ -296,6 +296,7 @@ function HomeProjectColumn(props: {
 }) {
   const servers = useServers()
   const layout = useLayout()
+  const dialog = useDialog()
   const projects = createMemo(() => layout.projects.list())
   return (
     <aside class="flex min-w-0 flex-col lg:pt-[52px]" aria-label={props.language.t("home.projects")}>
@@ -356,11 +357,17 @@ function HomeProjectColumn(props: {
                   </div>
                 </button>
                 <IconButtonV2
-                  class="absolute right-1 inset-y-1 opacity-0 group-hover:opacity-100"
+                  class="absolute right-1 inset-y-1 sm:opacity-0 sm:group-hover:opacity-100"
                   name="out"
                   variant="ghost-muted"
                   size="small"
                   icon={<IconV2 name="outline-dots" class="text-v2-icon-icon-muted" />}
+                  aria-label={props.language.t("servers.select")}
+                  onClick={() => {
+                    void import("@/components/dialog-select-server").then((x) => {
+                      dialog.show(() => <x.DialogSelectServer />)
+                    })
+                  }}
                 />
               </div>
               <Show when={healthy() && open()}>
