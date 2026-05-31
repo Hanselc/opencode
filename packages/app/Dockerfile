@@ -2,7 +2,6 @@ FROM oven/bun:1.3.14-debian AS builder
 
 WORKDIR /app
 
-# Install Python and build tools for native modules
 RUN apt-get update && apt-get install -y python3 python3-pip make g++ && rm -rf /var/lib/apt/lists/*
 
 COPY package.json bun.lock bunfig.toml tsconfig.json turbo.json ./
@@ -14,6 +13,7 @@ RUN bun install
 WORKDIR /app/packages/app
 
 ENV VITE_REMOTE_ONLY=true
+ENV VITE_NO_PERSIST_PASSWORDS=true
 
 RUN bun run build
 
